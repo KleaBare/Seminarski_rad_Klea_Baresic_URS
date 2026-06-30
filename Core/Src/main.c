@@ -94,7 +94,18 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  ssd1306_Init();
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(10,10);
+  ssd1306_WriteString("Pokretanje...", Font_7x10, White);
+  ssd1306_UpdateScreen();
+  HAL_Delay(500);
 
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(10,10);
+  ssd1306_WriteString("Spreman!", Font_6x8, White);
+  ssd1306_UpdateScreen();
+  HAL_Delay(500);
   /* USER CODE END 2 */
 
   /* Infinite loop */
