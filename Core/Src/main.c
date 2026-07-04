@@ -38,16 +38,19 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-volatile uint8_t podaci_spremni  = 0;
-volatile uint8_t uzorak_spreman  = 0;
+volatile uint8_t podaci_spremni   = 0;
+volatile uint8_t uzorak_spreman   = 0;
+volatile uint8_t prst_bio_prisutan = 0;
+
 uint32_t ir_buffer[2000];
 uint32_t red_buffer[2000];
-uint16_t buffer_index  = 0;
-uint8_t  buffer_pun    = 0;
-uint32_t zadnji_uzorak = 0;
+uint16_t buffer_index = 0;
+uint8_t  buffer_pun   = 0;
 
-//dodatna varijabla za bolji bpm
-static uint8_t prst_bio_prisutan = 0;
+int32_t bpm_history[7] = {0, 0, 0, 0, 0, 0, 0};
+uint8_t bpm_idx        = 0;
+int32_t spo2_history[5] = {0, 0, 0, 0, 0};
+uint8_t spo2_idx        = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,7 +73,7 @@ void MAX30100_Init(I2C_HandleTypeDef *hi2c)
 {
     uint8_t data;
 
-    // Reset
+    // reset
     data = 0x40;
     HAL_I2C_Mem_Write(hi2c, MAX30100_ADDR, MAX30100_REG_MODE, 1, &data, 1, 100);
     HAL_Delay(100);
@@ -83,7 +86,7 @@ void MAX30100_Init(I2C_HandleTypeDef *hi2c)
     data = 0x47;
     HAL_I2C_Mem_Write(hi2c, MAX30100_ADDR, MAX30100_REG_SPO2, 1, &data, 1, 100);
 
-    // LED struja: IR 36mA + RED 36mA (0xFF je previse, sensor satura)
+    // LED struja: IR 36mA + RED 36mA (0xFF je previse, senzor je u zasicenju)
     data = 0xAA;
     HAL_I2C_Mem_Write(hi2c, MAX30100_ADDR, MAX30100_REG_LED, 1, &data, 1, 100);
 
@@ -103,6 +106,7 @@ void MAX30100_ReadFifo(I2C_HandleTypeDef *hi2c, uint32_t *ir, uint32_t *red)
 }
 
 // port oxullo BeatDetector algoritma za STM32 HAL
+// originalni driver sa (https://github.com/oxullo/Arduino-MAX30100)
 #define BEATDETECTOR_INIT_HOLDOFF          2000
 #define BEATDETECTOR_CANDIDACY_TRESHOLD    0.02f
 #define BEATDETECTOR_MASKING_HOLDOFF       500
@@ -112,7 +116,8 @@ void MAX30100_ReadFifo(I2C_HandleTypeDef *hi2c, uint32_t *ir, uint32_t *red)
 #define BEATDETECTOR_STEP_RESISTRY         0.0005f
 #define BEATDETECTOR_STEP_DECAY            0.002f
 
-typedef enum {
+typedef enum
+{
     BEATDETECTOR_STATE_INIT,
     BEATDETECTOR_STATE_WAITING,
     BEATDETECTOR_STATE_FOLLOWING_SLOPE,
@@ -124,8 +129,6 @@ static BeatDetectorState  beat_state     = BEATDETECTOR_STATE_INIT;
 static float              beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
 static float              beat_bpm       = 0.0f;
 static uint32_t           beat_ts_last   = 0;
-static uint32_t           beat_ts_first  = 0;
-static uint32_t           beat_count     = 0;
 
 uint8_t BeatDetector_Update(float sample)
 {
@@ -134,53 +137,71 @@ uint8_t BeatDetector_Update(float sample)
 
     switch (beat_state)
     {
-        case BEATDETECTOR_STATE_INIT:
-            if (now > BEATDETECTOR_INIT_HOLDOFF) {
+        case BEATDETECTOR_STATE_INIT: //cekanje od 2000ms da izbjegnemo prikupljanje sumova na pocektu
+            if (now > BEATDETECTOR_INIT_HOLDOFF)
+            {
                 beat_state = BEATDETECTOR_STATE_WAITING;
             }
             break;
 
-        case BEATDETECTOR_STATE_WAITING:
-            if (sample > beat_threshold) {
+        case BEATDETECTOR_STATE_WAITING: //cekanje signala da naraste iznad praga
+            if (sample > beat_threshold)
+            {
                 beat_state = BEATDETECTOR_STATE_FOLLOWING_SLOPE;
             }
-            if (sample > BEATDETECTOR_MIN_THRESHOLD) {
-                beat_threshold -= BEATDETECTOR_STEP_DECAY;
-            } else {
-                beat_threshold += BEATDETECTOR_STEP_RESISTRY;
+            if (sample > BEATDETECTOR_MIN_THRESHOLD)
+            {
+                beat_threshold -= BEATDETECTOR_STEP_DECAY; //prilagodavanje praga da se dohvati slabiji signal
             }
+            else
+            {
+                beat_threshold += BEATDETECTOR_STEP_RESISTRY; //zastita od laznih detekcija u tisini
+            }
+
             if (beat_threshold < BEATDETECTOR_MIN_THRESHOLD)
                 beat_threshold = BEATDETECTOR_MIN_THRESHOLD;
+
             if (beat_threshold > BEATDETECTOR_MAX_THRESHOLD)
                 beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
             break;
 
-        case BEATDETECTOR_STATE_FOLLOWING_SLOPE:
-            if (sample < beat_threshold) {
+        case BEATDETECTOR_STATE_FOLLOWING_SLOPE: //pracenje vrha signala, kad padne prosao je otkucaj
+            if (sample < beat_threshold)
+            {
                 beat_state = BEATDETECTOR_STATE_MAYBE_DETECTED;
             }
+
             beat_threshold = sample * BEATDETECTOR_CANDIDACY_TRESHOLD;
+
             if (beat_threshold < BEATDETECTOR_MIN_THRESHOLD)
                 beat_threshold = BEATDETECTOR_MIN_THRESHOLD;
             break;
 
-        case BEATDETECTOR_STATE_MAYBE_DETECTED:
-            if (sample + BEATDETECTOR_CANDIDACY_TRESHOLD < beat_threshold) {
-                beat_detected = 1;
+        case BEATDETECTOR_STATE_MAYBE_DETECTED: //potvrda otkucaja
+            if (sample + BEATDETECTOR_CANDIDACY_TRESHOLD < beat_threshold)
+            {
+                beat_detected = 1; //potvrden otkucaj i izracun bpm
                 uint32_t interval = now - beat_ts_last;
-                if (beat_ts_last > 0 && interval > 300 && interval < 2000) {
+                if (beat_ts_last > 0 && interval > 300 && interval < 2000)
+                {
                     beat_bpm = 60000.0f / (float)interval;
                 }
+
                 beat_ts_last = now;
-                beat_count++;
                 beat_state = BEATDETECTOR_STATE_MASKING;
-            } else {
+
+            }
+
+            else
+            {
                 beat_state = BEATDETECTOR_STATE_WAITING;
             }
             break;
 
+       //blokiranje detekcije na 500ms zbog sekundarnog vala pulsnog signala koji bi se racunao kao dodatni otkucaj
         case BEATDETECTOR_STATE_MASKING:
-            if (now - beat_ts_last > BEATDETECTOR_MASKING_HOLDOFF) {
+            if (now - beat_ts_last > BEATDETECTOR_MASKING_HOLDOFF)
+            {
                 beat_state = BEATDETECTOR_STATE_WAITING;
             }
             break;
@@ -200,7 +221,7 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
 
     #define NUM_WINDOWS 9
     float ratios[NUM_WINDOWS];
-    uint16_t window_size = size / NUM_WINDOWS;
+    uint16_t window_size = size / NUM_WINDOWS; //podjela buffera signala na više dijelova zbog zastite od sumova
 
     for (int w = 0; w < NUM_WINDOWS; w++)
     {
@@ -211,7 +232,8 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
         uint32_t red_max = 0, red_min = 0xFFFFFFFF;
         uint64_t ir_sum = 0, red_sum = 0;
 
-        for (int i = start; i < end; i++) {
+        for (int i = start; i < end; i++)
+        {
             ir_sum  += ir_buf[i];
             red_sum += red_buf[i];
             if (ir_buf[i]  > ir_max)  ir_max  = ir_buf[i];
@@ -220,9 +242,9 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
             if (red_buf[i] < red_min) red_min = red_buf[i];
         }
 
-        float ir_ac  = (float)(ir_max - ir_min);
-        float red_ac = (float)(red_max - red_min);
-        float ir_dc  = (float)(ir_sum  / window_size);
+        float ir_ac  = (float)(ir_max - ir_min); // pulsna komponenta, tjst otkucaji
+        float red_ac = (float)(red_max - red_min); //pulsna komponenta crvene
+        float ir_dc  = (float)(ir_sum  / window_size); //prosjek, stalne komponenze (tkivo, kosti..)
         float red_dc = (float)(red_sum / window_size);
 
         if (ir_ac < 1.0f || ir_dc < 1.0f)
@@ -233,12 +255,14 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
 
     for (int i = 0; i < NUM_WINDOWS - 1; i++)
         for (int j = i + 1; j < NUM_WINDOWS; j++)
-            if (ratios[i] > ratios[j]) {
+            if (ratios[i] > ratios[j])
+            {
                 float tmp = ratios[i];
                 ratios[i] = ratios[j];
                 ratios[j] = tmp;
             }
 
+    //medijan ratia
     float ratio = ratios[NUM_WINDOWS / 2];
 
     if (ratio < 0.1f || ratio > 1.3f ) return 0;
@@ -246,6 +270,7 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
     // kalibrirana formula za MAX30100
     int32_t spo2 = (int32_t)(109.0f - 14.0f * ratio);
 
+    //stavljam ogranicenja jer senzor inace daje neobicne vrijednosti
     if (spo2 > 99) spo2 = 99;
     if (spo2 < 80)  spo2 = 80;
 
@@ -284,6 +309,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+
   /* USER CODE BEGIN 2 */
     char     buffer[32];
     uint32_t zadnje_vrijeme = 0;
@@ -292,6 +318,7 @@ int main(void)
 
     HAL_TIM_Base_Start_IT(&htim2);
 
+    //inicijakizacija malog oled zaslona
     ssd1306_Init();
     ssd1306_Fill(Black);
     ssd1306_SetCursor(10, 10);
@@ -327,12 +354,13 @@ int main(void)
     	    static float ir_ac_filtered = 0.0f;
     	    ir_ac_filtered = ir_ac_filtered * 0.75f + ir_ac * 0.25f;
 
-    	    BeatDetector_Update(ir_ac_filtered);  // ← filtrirani signal
+    	    BeatDetector_Update(ir_ac_filtered);  // filtrirani signal
 
     	    ir_buffer[buffer_index]  = ir;
     	    red_buffer[buffer_index] = red;
     	    buffer_index++;
-    	    if (buffer_index >= 2000) {
+    	    if (buffer_index >= 2000)
+    	    {
     	        buffer_index = 0;
     	        buffer_pun   = 1;
     	    }
@@ -345,9 +373,12 @@ int main(void)
 
             // provjera je li prst prisutan (zadnjih 10 uzoraka)
             uint8_t prst_prisutan = 1;
-            for (int i = 0; i < 10; i++) {
+            for (int i = 0; i < 10; i++)
+            {
                 uint16_t idx = (buffer_index + 2000 - 1 - i) % 2000;
-                if (ir_buffer[idx] < 13500) {
+
+                if (ir_buffer[idx] < 13500)
+                {
                     prst_prisutan = 0;
                     break;
                 }
@@ -361,16 +392,12 @@ int main(void)
                 int32_t novi_bpm = (int32_t)novi_bpm_f;
                 int32_t novi_spo2 = Calculate_SpO2(ir_buffer, red_buffer, 2000);
 
-                static int32_t bpm_history[7] = {0, 0, 0, 0, 0, 0, 0};
-                static uint8_t bpm_idx = 0;
-
                 if (!prst_bio_prisutan)
                    {
                     beat_state     = BEATDETECTOR_STATE_INIT;
                     beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
                     beat_bpm       = 0.0f;
                     beat_ts_last   = 0;
-                	beat_count     = 0;
 
                 	for (int i = 0; i < 7; i++) bpm_history[i] = 0;
                          bpm = 0;
@@ -379,7 +406,7 @@ int main(void)
 
                 if (novi_bpm >= 50 && novi_bpm <= 180)
                 {
-                    // odbaci ako se previse razlikuje od trenutnog prosjeka
+                    // provjera je li se bpm previse razlikuje
                     if (bpm == 0 || (novi_bpm > bpm - 20 && novi_bpm < bpm + 20))
                     {
                         bpm_history[bpm_idx] = novi_bpm;
@@ -396,9 +423,6 @@ int main(void)
                     }
                 }
 
-                static int32_t spo2_history[5] = {0, 0, 0, 0, 0};
-                static uint8_t spo2_idx = 0;
-
                 if (novi_spo2 >= 85 && novi_spo2 <= 100)
                 {
                     spo2_history[spo2_idx] = novi_spo2;
@@ -409,14 +433,14 @@ int main(void)
                 }
 
 
-                if (bpm > 0 && spo2 > 0)
+                if (bpm > 0 && spo2 > 0) //ispisivanje obradenih podataka
                 {
                     sprintf(buffer, "BPM: %ld", bpm);
                     ssd1306_SetCursor(0, 0);
                     ssd1306_WriteString(buffer, Font_11x18, White);
 
 
-                    sprintf(buffer, "SpO2:%ld%%", spo2);
+                    sprintf(buffer, "SpO2: %ld%%", spo2);
                     ssd1306_SetCursor(0, 25);
                     ssd1306_WriteString(buffer, Font_11x18, White);
 
@@ -495,7 +519,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 }
 
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) //mogucnost modifikacije koda za okidanja senzora pomoću interrupta
 {
     if (GPIO_Pin == GPIO_PIN_0)
         podaci_spremni = 1;
