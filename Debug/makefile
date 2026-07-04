@@ -61,7 +61,7 @@ main-build: Seminarski_rad_Klea_Baresic_URS.elf secondary-outputs
 
 # Tool invocations
 Seminarski_rad_Klea_Baresic_URS.elf Seminarski_rad_Klea_Baresic_URS.map: $(OBJS) $(USER_OBJS) C:\Users\T470\STM32CubeIDE\Seminarski_rad_Klea_Baresic_URS\STM32F446RETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Seminarski_rad_Klea_Baresic_URS.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\T470\STM32CubeIDE\Seminarski_rad_Klea_Baresic_URS\STM32F446RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Seminarski_rad_Klea_Baresic_URS.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+	arm-none-eabi-gcc -o "Seminarski_rad_Klea_Baresic_URS.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\T470\STM32CubeIDE\Seminarski_rad_Klea_Baresic_URS\STM32F446RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Seminarski_rad_Klea_Baresic_URS.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

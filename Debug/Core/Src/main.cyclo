@@ -1,5 +1,10 @@
 ../Core/Src/main.c:69:6:MAX30100_Init	1
-../Core/Src/main.c:91:6:MAX30100_ReadFifo	1
-../Core/Src/main.c:104:5:main	1
-../Core/Src/main.c:163:6:SystemClock_Config	3
-../Core/Src/main.c:208:6:Error_Handler	1
+../Core/Src/main.c:97:6:MAX30100_ReadFifo	1
+../Core/Src/main.c:130:9:BeatDetector_Update	18
+../Core/Src/main.c:192:7:BeatDetector_GetBPM	1
+../Core/Src/main.c:197:9:Calculate_SpO2	17
+../Core/Src/main.c:260:5:main	23
+../Core/Src/main.c:452:6:SystemClock_Config	3
+../Core/Src/main.c:490:6:HAL_TIM_PeriodElapsedCallback	2
+../Core/Src/main.c:498:6:HAL_GPIO_EXTI_Callback	2
+../Core/Src/main.c:509:6:Error_Handler	1
