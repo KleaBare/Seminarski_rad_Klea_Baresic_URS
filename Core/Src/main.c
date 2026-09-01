@@ -40,10 +40,14 @@
 /* USER CODE BEGIN PV */
 volatile uint8_t podaci_spremni   = 0;
 volatile uint8_t uzorak_spreman   = 0;
+volatile uint8_t otkucaj   = 0;
 volatile uint8_t prst_bio_prisutan = 0;
 
-uint32_t ir_buffer[2000];
-uint32_t red_buffer[2000];
+
+#define MAX_UZORKOVANJE      500
+
+uint32_t ir_buffer[MAX_UZORKOVANJE];
+uint32_t red_buffer[MAX_UZORKOVANJE];
 uint16_t buffer_index = 0;
 uint8_t  buffer_pun   = 0;
 
@@ -51,11 +55,15 @@ int32_t bpm_history[7] = {0, 0, 0, 0, 0, 0, 0};
 uint8_t bpm_idx        = 0;
 int32_t spo2_history[5] = {0, 0, 0, 0, 0};
 uint8_t spo2_idx        = 0;
+
+uint32_t led_bpm_start = 0;
+uint8_t led_bpm_aktivan = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+void ugasi_GPIO_izlaze(void);
 
 /* USER CODE END PFP */
 
@@ -67,7 +75,6 @@ void SystemClock_Config(void);
 #define MAX30100_REG_LED     0x09
 #define MAX30100_REG_FIFO    0x05
 #define MAX30100_REG_INT_EN  0x01
-#define MAX_UZORKOVANJE      2000
 
 void MAX30100_Init(I2C_HandleTypeDef *hi2c)
 {
@@ -276,6 +283,16 @@ int32_t Calculate_SpO2(uint32_t *ir_buf, uint32_t *red_buf, uint16_t size)
 
     return spo2;
 }
+
+void ugasi_GPIO_izlaze(void)
+{
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
+    led_bpm_aktivan = 0;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -312,6 +329,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
     char     buffer[32];
     uint32_t zadnje_vrijeme = 0;
+    uint32_t zadnji_spo2 = 0;
     int32_t  bpm  = 0;
     int32_t  spo2 = 0;
 
@@ -353,28 +371,33 @@ int main(void)
     	    static float ir_ac_filtered = 0.0f;
     	    ir_ac_filtered = ir_ac_filtered * 0.75f + ir_ac * 0.25f;
 
-    	    BeatDetector_Update(ir_ac_filtered);  // filtrirani signal
+    	    if (BeatDetector_Update(ir_ac_filtered))// filtrirani signal
+    	    {
+    	        otkucaj = 1;
+    	    }
 
     	    ir_buffer[buffer_index]  = ir;
     	    red_buffer[buffer_index] = red;
     	    buffer_index++;
-    	    if (buffer_index >= 2000)
+    	    if (buffer_index >= MAX_UZORKOVANJE)
     	    {
     	        buffer_index = 0;
     	        buffer_pun   = 1;
     	    }
     	}
 
-        // prikaz svakih 1000ms, samo kad je buffer pun
-        if (buffer_pun && (HAL_GetTick() - zadnje_vrijeme >= 1000))
+        // prikaz svakih 200ms, samo kad je buffer pun
+        if (buffer_pun && (HAL_GetTick() - zadnje_vrijeme >= 200))
         {
             zadnje_vrijeme = HAL_GetTick();
+
+
 
             // provjera je li prst prisutan (zadnjih 10 uzoraka)
             uint8_t prst_prisutan = 1;
             for (int i = 0; i < 10; i++)
             {
-                uint16_t idx = (buffer_index + 2000 - 1 - i) % 2000;
+                uint16_t idx = (buffer_index + MAX_UZORKOVANJE - 1 - i) % MAX_UZORKOVANJE;
 
                 if (ir_buffer[idx] < 13500)
                 {
@@ -389,7 +412,7 @@ int main(void)
                {
                 float novi_bpm_f = BeatDetector_GetBPM();
                 int32_t novi_bpm = (int32_t)novi_bpm_f;
-                int32_t novi_spo2 = Calculate_SpO2(ir_buffer, red_buffer, 2000);
+                int32_t novi_spo2 = Calculate_SpO2(ir_buffer, red_buffer, MAX_UZORKOVANJE);
 
                 if (!prst_bio_prisutan)
                    {
@@ -429,24 +452,25 @@ int main(void)
 
                     }
 
-                    if(bpm>100)
+                    if (bpm>100 && otkucaj)
                     {
-                       	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+                        otkucaj = 0;
 
-                       	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
-                       	HAL_Delay(500);
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-                        HAL_Delay(500);
+                        led_bpm_aktivan = 1;
+                        led_bpm_start = HAL_GetTick();
+
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
                         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
                     }
 
-                    if(bpm<50)
+                    if (led_bpm_aktivan &&
+                        HAL_GetTick() - led_bpm_start >= 100)
                     {
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
                         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
+                        led_bpm_aktivan = 0;
                     }
+
 
 
                 }
@@ -484,6 +508,30 @@ int main(void)
             	prst_bio_prisutan = 0;
                 bpm  = 0;
                 spo2 = 0;
+
+               // reset BPM povijesti
+               for (int i = 0; i < 7; i++)
+                   bpm_history[i] = 0;
+
+               bpm_idx = 0;
+
+                // reset SpO2 povijesti
+                for (int i = 0; i < 5; i++)
+                    spo2_history[i] = 0;
+
+                spo2_idx = 0;
+
+                // reset detektiranja otkucaja
+                beat_state     = BEATDETECTOR_STATE_INIT;
+                beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
+                beat_bpm       = 0.0f;
+                beat_ts_last   = 0;
+
+                // gasenje GPIO izlaza
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
                 ssd1306_SetCursor(0, 20);
                 ssd1306_WriteString("Stavi prst", Font_11x18, White);
             }
