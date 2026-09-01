@@ -309,7 +309,6 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
-
   /* USER CODE BEGIN 2 */
     char     buffer[32];
     uint32_t zadnje_vrijeme = 0;
@@ -421,6 +420,35 @@ int main(void)
                         }
                         if (count > 0) bpm = sum / count;
                     }
+
+                    if(bpm>50 && bpm<=100)
+                    {
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+
+                    }
+
+                    if(bpm>100)
+                    {
+                       	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+
+                       	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+                       	HAL_Delay(500);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                        HAL_Delay(500);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+                    }
+
+                    if(bpm<50)
+                    {
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
+                    }
+
+
                 }
 
                 if (novi_spo2 >= 85 && novi_spo2 <= 100)
@@ -462,10 +490,11 @@ int main(void)
 
             ssd1306_UpdateScreen();
         }
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    }
+
   /* USER CODE END 3 */
 }
 
