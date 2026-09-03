@@ -42,6 +42,7 @@ volatile uint8_t podaci_spremni   = 0;
 volatile uint8_t uzorak_spreman   = 0;
 volatile uint8_t otkucaj   = 0;
 volatile uint8_t prst_bio_prisutan = 0;
+volatile uint8_t reset_zahtjev = 0;
 
 
 #define MAX_UZORKOVANJE      500
@@ -56,8 +57,7 @@ uint8_t bpm_idx        = 0;
 int32_t spo2_history[5] = {0, 0, 0, 0, 0};
 uint8_t spo2_idx        = 0;
 
-uint32_t led_bpm_start = 0;
-uint8_t led_bpm_aktivan = 0;
+uint32_t zadnji_reset_tick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -289,8 +289,6 @@ void ugasi_GPIO_izlaze(void)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-
-    led_bpm_aktivan = 0;
 }
 
 /* USER CODE END 0 */
@@ -329,7 +327,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
     char     buffer[32];
     uint32_t zadnje_vrijeme = 0;
-    uint32_t zadnji_spo2 = 0;
     int32_t  bpm  = 0;
     int32_t  spo2 = 0;
 
@@ -356,6 +353,39 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+    	if(reset_zahtjev)
+    	{
+    	  reset_zahtjev=0;
+
+    	  //reset funkcija detektiranja
+    	  beat_state=BEATDETECTOR_STATE_INIT;
+    	  beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
+    	  beat_bpm=0.0f;
+    	  beat_ts_last=0;
+
+    	  //reset preracunanih vrijednosti
+    	  bpm=0;
+    	  spo2=0;
+    	  for (int i = 0; i < 7; i++) bpm_history[i] = 0;
+    	  for (int i = 0; i < 5; i++) spo2_history[i] = 0;
+    	  bpm_idx = 0;
+    	  spo2_idx = 0;
+
+    	  //reset buffera
+    	  buffer_index=0;
+    	  buffer_pun=0;
+    	  prst_bio_prisutan=0;
+
+    	  ugasi_GPIO_izlaze();
+
+    	  ssd1306_Fill(Black);
+    	  ssd1306_SetCursor(10,10);
+    	  ssd1306_WriteString("Reset...",Font_11x18, White);
+    	  ssd1306_UpdateScreen();
+    	  HAL_Delay(300);
+    	}
+
+
     	if (uzorak_spreman)
     	{
     	    uzorak_spreman = 0;
@@ -444,35 +474,25 @@ int main(void)
                         if (count > 0) bpm = sum / count;
                     }
 
-                    if(bpm>50 && bpm<=100)
+                    if(bpm>50 && bpm<100)
                     {
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
                     	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
+                    	HAL_Delay(500);
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+                    	HAL_Delay(500);
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
                     	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-
                     }
 
-                    if (bpm>100 && otkucaj)
+                    else if(bpm>=100)
                     {
-                        otkucaj = 0;
-
-                        led_bpm_aktivan = 1;
-                        led_bpm_start = HAL_GetTick();
-
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
                         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+                        HAL_Delay(300);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+                        HAL_Delay(300);
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
                     }
-
-                    if (led_bpm_aktivan &&
-                        HAL_GetTick() - led_bpm_start >= 100)
-                    {
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-
-                        led_bpm_aktivan = 0;
-                    }
-
-
-
                 }
 
                 if (novi_spo2 >= 85 && novi_spo2 <= 100)
@@ -509,23 +529,7 @@ int main(void)
                 bpm  = 0;
                 spo2 = 0;
 
-               // reset BPM povijesti
-               for (int i = 0; i < 7; i++)
-                   bpm_history[i] = 0;
 
-               bpm_idx = 0;
-
-                // reset SpO2 povijesti
-                for (int i = 0; i < 5; i++)
-                    spo2_history[i] = 0;
-
-                spo2_idx = 0;
-
-                // reset detektiranja otkucaja
-                beat_state     = BEATDETECTOR_STATE_INIT;
-                beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
-                beat_bpm       = 0.0f;
-                beat_ts_last   = 0;
 
                 // gasenje GPIO izlaza
                 HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
@@ -598,8 +602,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) //mogucnost modifikacije koda za okidanja senzora pomoću interrupta
 {
-    if (GPIO_Pin == GPIO_PIN_0)
+    if (GPIO_Pin == GPIO_PIN_0) //senzor
         podaci_spremni = 1;
+
+    else if (GPIO_Pin == GPIO_PIN_1) //tipkalo
+    {
+    	uint32_t now = HAL_GetTick();
+    	if (now-zadnji_reset_tick<200)	//debounce od 200ms
+    	{
+    	  zadnji_reset_tick = now;
+    	  reset_zahtjev = 1;
+    	}
+    }
 }
 /* USER CODE END 4 */
 
