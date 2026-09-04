@@ -39,10 +39,11 @@
 
 /* USER CODE BEGIN PV */
 volatile uint8_t podaci_spremni   = 0;
-volatile uint8_t uzorak_spreman   = 0;
+volatile uint8_t uzorci_cekanje   = 0;
 volatile uint8_t otkucaj   = 0;
 volatile uint8_t prst_bio_prisutan = 0;
 volatile uint8_t reset_zahtjev = 0;
+volatile uint32_t zadnji_reset_tick = 0;
 
 
 #define MAX_UZORKOVANJE      500
@@ -57,7 +58,11 @@ uint8_t bpm_idx        = 0;
 int32_t spo2_history[5] = {0, 0, 0, 0, 0};
 uint8_t spo2_idx        = 0;
 
-uint32_t zadnji_reset_tick = 0;
+uint32_t led_tick = 0;
+uint8_t led_stanje = 0;
+uint8_t led_tip = 0;
+uint8_t prethodni_led = 0;
+uint8_t prethodni_led_tip = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -353,6 +358,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+
+		uint32_t now = HAL_GetTick();
+
     	if(reset_zahtjev)
     	{
     	  reset_zahtjev=0;
@@ -361,7 +369,7 @@ int main(void)
     	  beat_state=BEATDETECTOR_STATE_INIT;
     	  beat_threshold = BEATDETECTOR_MAX_THRESHOLD;
     	  beat_bpm=0.0f;
-    	  beat_ts_last=0;
+    	  beat_ts_last=HAL_GetTick();;
 
     	  //reset preracunanih vrijednosti
     	  bpm=0;
@@ -386,12 +394,21 @@ int main(void)
     	}
 
 
-    	if (uzorak_spreman)
+    	while (uzorci_cekanje>0)
     	{
-    	    uzorak_spreman = 0;
+    		__disable_irq();
+
+    		if (uzorci_cekanje > 0)
+    		        uzorci_cekanje--;
+
+    		__enable_irq();
 
     	    uint32_t ir, red;
-    	    MAX30100_ReadFifo(&hi2c1, &ir, &red);
+
+    	    (MAX30100_ReadFifo(&hi2c1, &ir, &red));
+
+    	    if (ir == 0 || red == 0)
+    	    	continue;
 
     	    static float ir_dc = 0.0f;
     	    ir_dc = ir_dc * 0.99f + (float)ir * 0.01f;
@@ -425,16 +442,22 @@ int main(void)
 
             // provjera je li prst prisutan (zadnjih 10 uzoraka)
             uint8_t prst_prisutan = 1;
+
+            uint64_t ir_zbroj=0;
+
+            /* Provjera zadnjih 10 IR uzoraka */
             for (int i = 0; i < 10; i++)
             {
-                uint16_t idx = (buffer_index + MAX_UZORKOVANJE - 1 - i) % MAX_UZORKOVANJE;
+                uint16_t idx =
+                    (buffer_index + MAX_UZORKOVANJE - 1 - i) % MAX_UZORKOVANJE;
 
-                if (ir_buffer[idx] < 13500)
-                {
-                    prst_prisutan = 0;
-                    break;
-                }
+                ir_zbroj+=ir_buffer[idx];
             }
+
+            uint32_t ir_prosjek=ir_zbroj/10;
+
+            if(ir_prosjek<13500)
+            	prst_prisutan=0;
 
             ssd1306_Fill(Black);
 
@@ -459,7 +482,7 @@ int main(void)
                 if (novi_bpm >= 50 && novi_bpm <= 180)
                 {
                     // provjera je li se bpm previse razlikuje
-                    if (bpm == 0 || (novi_bpm > bpm - 20 && novi_bpm < bpm + 20))
+                	if (bpm == 0 || (novi_bpm >= (bpm * 75) / 100 && novi_bpm <= (bpm * 125) / 100))
                     {
                         bpm_history[bpm_idx] = novi_bpm;
                         bpm_idx = (bpm_idx + 1) % 7;
@@ -474,25 +497,84 @@ int main(void)
                         if (count > 0) bpm = sum / count;
                     }
 
-                    if(bpm>50 && bpm<100)
+                    uint8_t novi_led_tip = 0;
+
+                    /*
+                     * 0 = nema validnog BPM
+                     * 1 = 50-99 BPM
+                     * 2 = 100+ BPM
+                     */
+                    if (bpm >= 50 && bpm < 100)
                     {
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
-                    	HAL_Delay(500);
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
-                    	HAL_Delay(500);
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                        novi_led_tip = 1;
+                    }
+                    else if (bpm >= 100 && bpm <= 180)
+                    {
+                        novi_led_tip = 2;
+                    }
+                    else
+                    {
+                        novi_led_tip = 0;
                     }
 
-                    else if(bpm>=100)
+                    if (novi_led_tip != prethodni_led_tip)
                     {
-                    	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-                        HAL_Delay(300);
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-                        HAL_Delay(300);
-                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+                        prethodni_led_tip = novi_led_tip;
+
+                        led_tick = now;
+                        led_stanje = 0;
+
+                        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
                     }
+
+                    if (novi_led_tip == 1)
+                    {
+                        led_tip = 1;
+
+                        if ((now - led_tick) >= 500)
+                        {
+                            led_tick = now;
+
+                            led_stanje = !led_stanje;
+
+                            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, led_stanje ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
+                        }
+                    }
+
+                        else if (novi_led_tip == 2)
+                        {
+                            led_tip = 2;
+
+                            if ((now - led_tick) >= 300)
+                            {
+                                led_tick = now;
+
+                                led_stanje = !led_stanje;
+
+                                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+
+                                if (led_stanje)
+                                {
+                                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+
+                                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                                }
+                                else
+                                {
+                                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
+                                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_SET);
+                                }
+                            }
+                        }
+
+                        else
+                        {
+                            led_tip = 0;
+                            led_stanje = 0;
+                            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
+                        }
                 }
 
                 if (novi_spo2 >= 85 && novi_spo2 <= 100)
@@ -525,16 +607,10 @@ int main(void)
             }
             else
             {
+            	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
             	prst_bio_prisutan = 0;
                 bpm  = 0;
                 spo2 = 0;
-
-
-
-                // gasenje GPIO izlaza
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
                 ssd1306_SetCursor(0, 20);
                 ssd1306_WriteString("Stavi prst", Font_11x18, White);
@@ -596,7 +672,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM2)
     {
-        uzorak_spreman = 1;
+        if(uzorci_cekanje<10)
+        {
+        	uzorci_cekanje++;
+        }
     }
 }
 
@@ -608,7 +687,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) //mogucnost modifikacije koda za 
     else if (GPIO_Pin == GPIO_PIN_1) //tipkalo
     {
     	uint32_t now = HAL_GetTick();
-    	if (now-zadnji_reset_tick<200)	//debounce od 200ms
+    	if ((now-zadnji_reset_tick)>200)	//debounce od 200ms
     	{
     	  zadnji_reset_tick = now;
     	  reset_zahtjev = 1;

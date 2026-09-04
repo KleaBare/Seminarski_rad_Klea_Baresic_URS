@@ -59,6 +59,7 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define MAX30100_INT_Pin GPIO_PIN_0
 #define MAX30100_INT_GPIO_Port GPIOC
+#define MAX30100_INT_EXTI_IRQn EXTI0_IRQn
 
 /* USER CODE BEGIN Private defines */
 
